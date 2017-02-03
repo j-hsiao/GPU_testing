@@ -26,6 +26,36 @@ __global__ void convolveKernelBordered(uchar* indata, uchar* outdata, float* ker
 
 
 
+//this should not be called with a block with z dimension
+__global__ void convolveKernelBordered_pixel(uchar* indata, uchar* outdata, float* kernel, int IW,
+                                       int KH, int KW, int BW) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int idy = blockIdx.y * blockDim.y + threadIdx.y;
+  float val[3] = {0.0f, 0.0f, 0.0f};
+  for (int i = 0; i < KH; i++) {
+    for (int j = 0; j < KW; j++) {
+      int imx = idx + j;
+      int imy = idy + i;
+      for (int channel = 0; channel < 3; channel++) {
+        val[channel] += indata[(((imy * BW) + imx) * 3) + channel] * kernel[(i * KW) + j];
+      }
+    }
+  }
+  for (int channel = 0; channel < 3; channel++) {
+    val[channel] = val[channel] < 0 ? 0:val[channel];
+    outdata[(((idy * IW) + idx) * 3) + channel] = val[channel] > 255 ? 255: (uchar) val[channel];
+  }
+
+  //outdata[(((idy * IW) + idx) * 3) + channel] = indata[((((idy + (KH / 2)) * BW) + (idx + (KW / 2))) * 3) + channel];
+  //outdata[(((idy * IW) + idx) * 3) + channel] = 0;
+}
+
+
+
+
+
+
+
 
 int main(int argn, char** args){
   cv::VideoCapture cap = cv::VideoCapture(0);
@@ -56,9 +86,38 @@ int main(int argn, char** args){
   int KH = blurfilt.size().height;
 
   //640x480x3 total
-  dim3 grid(160, 120);
+  dim3 grid(20, 15);
+  dim3 block(32, 32, 1);
+  /*
+  notes:
+    grid:      block:     runtime:
+    160 120    4  4  3    1.4-1.7 msec per image
+    40  480    16 1  3    1.22    msec per image
+    ~15% increase in speed when matching half-warp
 
-  dim3 block(4, 4, 3);
+    80  120    8  4  3    1.21    msec per image
+    20  480    32 1  3    0.98    msec per image
+    ~23% increase in speed using full warp
+
+    40  30     16 16 3    1.04    msec per image
+    20  60     32 8  3    0.98    msec per image
+                          occasional 1.2
+    6% increase in speed from halfwarps to full warp
+
+    10  60     64 4  3    0.98, occasional 1.2
+
+    5   240   128 2  3    0.98, occasional 1.2
+
+    20  480    32 1  3    0.98, occasional 1.3
+
+    border_pixel:
+    20  30     32 16 1    0.45-0.46: even faster!
+    20  15     32 32 1    0.46: pretty much same as above
+  */
+
+
+
+
   uchar* kernelInput = 0;
   uchar* kernelOutput = 0;
   float* kernelFilter = 0;
@@ -131,7 +190,7 @@ int main(int argn, char** args){
       cudaEventCreate(&stop);
       cudaEventRecord(start, 0);
 
-      convolveKernelBordered<<<grid,block>>>(kernelInput, kernelOutput, kernelFilter, IW, KW, KH, BW);
+      convolveKernelBordered_pixel<<<grid,block>>>(kernelInput, kernelOutput, kernelFilter, IW, KW, KH, BW);
       
       cudaEventRecord(stop, 0);
       cudaEventSynchronize(stop);
