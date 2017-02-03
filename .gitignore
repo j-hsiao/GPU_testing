@@ -1,0 +1,12 @@
+all
+gpu
+test
+t
+conv
+cvtest
+convgpu
+saxpy
+test.c
+test.cpp
+test.cu
+*~

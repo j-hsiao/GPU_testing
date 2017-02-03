@@ -1,0 +1,1034 @@
+https://developer.nvidia.com/gpu-computing-webinars
+##############################
+##############################
+gpu computing using cuda c - an introduction (2010)
+##############################
+##############################
+memory management:
+  cpu, gpu: sep mem, need to xfer data
+  pointers: addresses, can't tell whether gpu or cpu
+    *deref on wrong device = crash: bad memory access
+  cpu manages gpu mem:
+    allocation:
+      cudaMalloc(void** pointer, size_t nbytes)
+      cudaMemset(void* pointer, int value, size_t count)
+      cudaFree(void* pointer)
+    copy:
+      cudaMemcpy(void* dest, void* src, size_t nbytes,
+                       enum cudaMemcpyKind direction)
+        enum cudaMemcpyKind:
+          cudaMemcpyHostToDevice
+          cudaMemcpyDeviceToHost
+          cudaMemcpyDeviceToDevice
+        Non-blocking memcopies are provided
+          (else going to wait til all kernels are done)
+      NOTE: set pointers to 0 first so
+      can check whether still 0 after malloc
+        (if still 0 = failed allocation)
+kernels/programs
+  kernel = parallel code
+  thread block = block of threads
+  grid = all blocks
+  code written for a single thread
+  thread block: can use shared memory, synch execution
+
+  gpu kernel restrictions:
+    must return void
+    can only dereference GPU pointers
+    no static variables
+    some more for older GPUs
+
+    must use qualifier:
+      __global__: launched by cpu, can't be called from GPU
+      __device__: called by other gpu functions, cpu can't run
+      __host__: can be executed by CPU
+      __host__ and __device__: can be combined
+
+    grid dims: up to 2d: (dim3 type) (blocks will have... blockidx.x, blockidx.y...??)
+    thread-block dimensions: up to 3D(dim3 type)
+    shared memory: # of bytes per block
+      for exterm smem vars declared w/o size
+      optional, 0 by default
+    stream id:
+      optional, 0 by default
+    ex:
+    dim3 grid(n,n)
+    dim3 block(n,n)
+    kernel<<<griddim, blockdim[, 0, 0]>>>(...);
+    kernel<<<32, 512>>>(...); (1-d by default)
+    2d ex:
+    int ix = blockIdx.x * blockDim.x + threadIdx.x;
+    int iy = blockIdx.y * blockDim.y + threadIdx.y;
+    int finalInd = iy * (griddimx * blockdimx) + ix;
+
+    3d guess:??
+    int ix = blockIdx.x * blockDim.x + threadIdx.x;
+    int iy = blockIdx.y * blockDim.y + threadIdx.y;
+    int iz = blockIdx.z * blockDim.z + threadIdx.z;
+    (these are like coordinates)
+    significance: z, y, x->
+    iz * (gridDim.x * gridDim.y * blockDim.x * blockDim.y) +
+    iy * (gridDim.x * blockDim.x) +
+    ix
+
+    ix + (gridDim.x * blockDim.x) * (iy + (gridDim.y * blockDim.y) * (iz))
+
+  execution notes:
+    thread blocks should be independent:
+    won't release resources until all threads in block complete
+    any order-basically independent
+    ie:
+      shared queue: okay
+      shared lock: bad
+    independence = scalability
+synchronization
+  kernels: asynch->control returns to cpu, can do stuff while kernel executing
+  memcopies are synchronous (only can do stuff after copy is finished)
+  copy starts after kernels are done
+  cudaThreadSynchronize():
+    blocks til previous cuda calls completed
+    (launch execution, wait til finish)
+  asynchronous cuda calls:
+    non-blocking memcopies
+    ability to overlap memcopies and kernel execution
+    ability to concurrently execute several kernels
+error reporting
+  cuda calls return: cudaError_t type
+    (except kernel launches)
+  cudaError_t cudaGetLastError(void)
+    returns code for last error ("no error" has a code)
+  char* cudaGetErrorString(cudaError_t code):
+    returns null-term string for error
+  ex:
+    //print the last error
+    printf("%s\n", cudaGetErrorString(cudaGetLastError()))
+event api
+  events->inserted/recorded into call streams
+  ex: measure time b/w calls, query status of asynch call, block cpu til event
+      asyncAPI sample in cuda sdk
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0); //0: stream id
+    kernel<<<grid, block>>>(...);
+    cudaEventRecord(stop,0)    //    schedules event to be seen by gpu
+    cudaEventSynchronize(stop);//    stop cpu til gpu sees stop
+    float et;
+    cudaEventElapsedTime(&et, start, stop);
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+  
+  
+device management:
+  cpu-query and select GPU
+    cudaGetDeviceCount(int* count)
+    cudaSetDevice(int device)
+    cudaGetDevice(int *current_device)
+    cudaGetDeviceProperties( cudaDeviceProp* prop,
+                             int device)
+    cudaChooseDevice( int* device, cudaDeviceProp* prop)
+
+  multigpu:
+    device 0 is default
+    1 cpu thread can control one gpu
+    multiple cpu threads can use same gpu
+
+shared memory:
+  on-chip memory
+  allocated per threadblock
+  any thread in threadblock can use
+  shares data
+  user-managed cache
+  (global memory = slower)
+  16-48 KB per multiprocessor
+
+  ex:
+    1D stencil
+      1d data
+      each output element sum all elements in a radius
+    (like 1-d conv?)
+    overlap required reads
+    1-d threadblocks
+      threadblock-output BLOCK_DIMX elements
+        read input from gmem to smem
+          needs BLOCK_DIMx + 2*RADIUS inputs
+          ( data )             ( border )
+        compute
+        write to gmem
+
+    [                data                             ]
+    [block1  ][block2  ] ...
+    [t1][t2]..[t1][t2]..
+
+
+    code:
+      __global__ void stencil(int *output, int* input, int dimx, int dimy) {
+        __shared__ int s_a[BLOCK_DIMX + 2*RADIUS];
+
+        //global index
+        int global_ix = blockIdx.x * blockDim.x + threadIdx.x;
+
+        //local index into this block's memory
+        int local_ix  = threadIdx.x + RADIUS
+
+        //load current index into shared memory
+        s_a[local_ix] = input[global_ix];
+
+        //pick 3 threads to additionally load the border values
+        if (threadIdx.x < RADIUS) {
+          s_a[local_ix - RADIUS] = input[global_ix - RADIUS];
+          s_a[local_ix + BLOCK_DIMX] = input[global_ix + BLOCK_DIMX];
+        }
+
+        //all threads wait (finish putting mem into smem)
+        //only put in codeblocks reachable by ALL threads...
+        //(will block because some never reach it)
+        
+        __syncthreads();
+        
+        //calculate value on smem
+        int value = 0;
+        for(offset = -RADIUS;offset <= RADIUS; offset ++) {
+          value += s_a[local_ix + offset];
+        }
+
+        //push value to gmem
+        output[global_ix] = value
+      }
+
+memory model
+  local storage:
+    per-thread storage (registers)
+    (thread-life)
+  
+  shared memory
+    by thread-blocks
+    (block-life)
+
+  global (device) memory
+    everything
+    (allocation to deallocation)
+    (can use b/w kernels)
+
+resource review:
+  cuda toolkit (compiler, libraries, documentation)
+  cuda sdk (code samples, whitepapers)
+  instructional material on cuda zone
+    slides & audio
+    university course mats
+    tuts
+    forums
+
+gpu tools:
+  profiler (nvprof)
+    sample signals for analysis
+  debugger
+    on gpu
+  CUDAMemCheck
+    out of bounds accesses
+
+Q&A:
+  cuda guide->gpus->max thread count etc, generally 100s per core
+  __shared__ int->only declared once, not per thread...
+  
+  row-major order
+
+  not cleanly divisible->
+    halve the array
+    over-allocate + if guard
+
+  multi-gpu requires multi-thread
+
+  structs okay
+
+  printf is okay
+  
+  threadblocks->must be indep-no syncs
+  
+  classes okay
+  templates okay
+  ...
+
+
+##############################
+##############################
+gpu computing using cuda c - advanced 1 (2010)
+##############################
+##############################
+memory optimizations
+  NOTE: maximize independent parallelism
+  maximize arithmetic intensity
+    (data accesses might be more expensive)
+  memory access patterns->spatial locality
+  shared memory
+  low thread resources = more threads to run
+
+  warps: 32-grouped threads
+  half-warps (groups of 16)
+  memory levels:
+  register: per thread, on chip
+  local:    per thread, off chip
+  shared:   per block,  on-chip
+  global:   all, off-chip
+  constant: all, off-chip
+  texture:  all, off-chip, cached
+
+host->device xfer
+  PCIe: 8 GB/s
+  device dram: 141 GB/s
+  (minimize xfers)
+  group transfers (large xfer = more efficient than many small ones)
+  page-locked/pinned memory
+    cudaMallocHost()-highest cuda memcpy performance
+    (locks awy ram = too much = reduces system performance)
+
+  overlap dataxfer and computation
+    (async and stream H2D, D2H)
+    CPU comp overlap w/ data xfer
+    kernel overlap w/ data xfers
+    stream = sequence of operations->sequential, dependent
+    need to use dif streams to get overlap
+      cudaMemcpyAsync(dst, src, size, dir, stream)
+        NOTE: REQUIRES pinned memory (cudaMallocHost)
+    ex:
+      overlap memcpy and kernel w/ cpu function:
+        cudaMemcpyAsync(a_d, a_h, size, cudaMemcpyHostToDevice, 0);
+        kernel<<<grid, block>>>(a_d);
+        cpuFunction()
+    ex:
+      overlap memcpy w/ kernel
+      deviceOverlap field of cudaDeviceProp var:
+        cudaGetDeviceProperties( cudaDeviceProp* prop,
+                               int device)
+      must use DIFFERENT, NON-ZERO streams
+      stream 0 waits til all previous calls completed
+        (can't overlap)
+      code:
+        cudaStreamCreate(&stream1);
+        cudaStreamCreate(&stream2);
+        cudaMemcpyAsync(dst, src, size, dir, stream1);
+        kernel<<<grid,block,0,stream2>>>(...);
+        cpufunchere
+        ->overlapping all 3
+GPU/CPU synchronization
+  context-based
+    cudaThreadSynchronize()
+      blocks til all cuda calls complete
+    stream-based
+      cudaStreamSynchronize(stream)
+        blocks til stream finished
+      cudaStreamQuery(stream)
+        ask if stream done
+        returns:
+          cudaSuccess
+          cudaErrorNotReady,...
+        no block
+  stream-based using events
+    cudaEventRecord(event, stream)
+    cudaEventSynchronize(event)
+      blocks til given event is recorded
+    cudaEventQuery(event)
+      returns cudaSuccess, cudaErrorNotReady,...
+      no block
+
+  zero copy
+    access host mem from device
+    xfers performed as needed (cuda 2.2 + )
+    check canMapHostMemory of cudaDeviceProp
+    setup->host using mapped memory (pinned memory)
+    use:
+      cudaSetDeviceFlags(cudaDeviceMapHost);
+      cudaHostAlloc((void **)&a_h, nBytes, cudaHostAllocMapped);
+      cudaHostGetDevicePointer((void**) &a_d, (void *)a_h, 0);
+      for (i = 0; i < N; i++) a_h[i] = i;
+      increment<<<grid, block>>>(a_d, N);
+    NOTES:
+      will always "win" for integrated devices
+        (integrated field of cudaDeviceProp)
+      zero copy will be faster if data is only read/written from/to global memory once
+        copy input data to GPU memory
+        run one kernel
+        copy output data back to cpu memory
+      possibly faster to async memcopy
+      devices: 32-bit pointers = 4GB context limit
+optimizations
+  theoretical bandwidth
+  effective bandwidth
+    copying N floats:
+      ((array size (num bytes) / (1024^3) (bytes/gigabytes)) * 2) / time = GB/s
+      (2 b/c read + write)
+  coalescing
+    global mem access of 32, 64, 128-bit words by half-warp of threads = only 1 or 2
+    transactions if reqs met:
+      look at compute capability(1.0, 1.1 = stricter)
+    1.0, 1.1:
+      k-th thread access k-th word in the segment (not all need to access)
+      or k-th word in 2 contiguous 128B segments for 128-bit words
+      must be in-order and aligned
+    1.2:
+      issues transactions for segments of 32, 64, 128 bytes
+      smaller transactions avoid wasted bandwidth
+    examples:
+      ex:
+        __global__ void offsetCopy(float *odata, float* idata,
+                                   int offset) {
+          int xid = blockIdx.x * blockDim.x + threadIdx.x + offset;
+          odata[xid] = idata[xid]
+        }
+        notes: float = 32 bits = 4 bytes = 1 word
+        32-bit words => offset between 0 and 16 floats
+        1.0-> only at 0, and 16 = good bandwidth
+        1.2-> only at 0, 8, 16  = good bandwidth, 0, 16 = best
+        explanation:
+          1.0: 0, 16 = aligned to area
+               all else: crosses boundary
+          1.2: 0, 16: same as above, perfectly into a 64-byte segment
+               = only grab 64 bytes-no unnecessary transfer
+               others: need to grab all 128 = half unused
+               8: looks at top and bottom 64: bottom 64 uses top 32
+               top 64 uses bottom 32 = 2 transfers of 32 = slower than
+               1 transfer of 64, but still faster than 128
+         stride:
+           loss performance fast
+       shared memory:
+         helps with strided accesses
+         100x faster than global
+         cache data to reduce global accesses
+         threads coop within a block
+         avoid non-coalesced access
+           (stage loads and stores in shared memory to
+           re-order non-coalescable addressing)
+         architecture:
+           accessed by many threads=divided into 16?? banks
+           successive 32-bit words to successive banks
+           banks:service 1 address per cycle
+           access same bank = bank conflict->serial
+           ??data = wrap-around within bank?
+           NOTE:
+             increased stride in access = more conflicts...
+           very fast if no bank conflicts
+           warp_serialize = how many bank conflicts
+           fast case:
+             half-warp: access different banks
+             half-warp: all same address (broadcast)
+               example: arguments to kernel all threads access = broadcasted = not slow
+           slow case:
+             bank conflict: multiple threads in same half-warp access
+               same bank, dif address (stride of 16 words)
+               ->serialize access = 16x slower
+         ex:
+           transpose function
+           bad
+             __global__ void transposeNaive(float *odata, float* indata, int width, int height) {
+               int xIndex = blockIdx.x * TILE_DIM + threadIdx.x;
+               int yIndex = blockIdx.y * TILE_DIM + threadIdx.y;
+               int index_in = xIndex + width * yIndex;
+               int index_out = yIndex + height * xIndex;
+               odata[index_out] = indata[index_in];
+             }
+             issue:
+               read = a okay
+               write = strided by width = very bad for accesses: lots of wasted accesses
+           good
+             __global__ void transposeCoalesced(float* odata, float* indata, int width, int height) {
+               __shared__ float tile[TILE_DIM][TILE_DIM];
+               int xIndex = blockIdx.x * TILE_DIM + threadIdx.x;
+               int yIndex = blockIdx.y * TILE_DIM + threadIdx.y;
+               int index_in = xIndex + width * yIndex;
+               
+               xIndex = blockIdx.y * TILE_DIM + threadIdx.x
+               yIndex = blockIdx.x * TILE_DIM + threadIdx.y
+
+               int index_out = xIndex + height*yIndex;
+
+
+               //assumptions:
+               //threadblocks are square
+               //threadblocks perfectly divide the matrix to transpose in both dimensions
+               //but not necessarily each matrix dimension is the same
+
+               tile[threadIdx.y][threadIdx.x] = idata[index_in];
+               __syncthreads();
+
+               odata[index_out] = tile[threadIdx.x][threadIdx.y];
+
+           bank conflicts: 16x16 = columns in same bank
+             = odata[index_out] = tile[threadIdx.x][threadIdx.y] leads to 16-way bank conflict
+             solution: padd shared memory: tile[TILE_DIM][TILE_DIM + 1]->no bank conflicts
+         textures in cuda
+           obj for reading data
+             data is cached (coalescing is a problem)
+             filtering (linear, bi, tri linear interp, etc)
+             wrap modes (out-of-bounds-clamp to edge or repeat
+             addressable: 1, 2, 3d
+           ex:
+             (2.5, 0.5)->interpolated value or snap to nearest point in texture (depend on settings)
+             out of bounds = wrap (modulo)
+             clamp = outof bounds->take min/max of the bounds and index
+           types:
+             linear memory (cudaMalloc)
+               1D filtering only
+               integer addressing
+               no filtering, no addressing modes
+               good spatial locality
+             CUDA array:
+               block-linear format
+               1,2,3D array
+               float addressing
+               filtering
+               addressing modes (clamp/wrap)
+               not writeable from threads
+             pitch linear
+               global mem address bound to a texture
+               'has pitch for padding of 1st dimension'-wtf does this mean?
+               2D
+               float/integer addressing
+               filtering
+               clamp/wrap
+               + writeable
+             steps:
+               cpu:
+                 allocate
+                 create texture ref object
+                 bind texture reference to memory/array
+                 when done, unbind texture reference, free resources
+               device:
+                 fetch reference
+                 linear: tex1Dfetch()
+                 array:  tex[1,2,3]D()
+                 pitch linear: text2D()
+             NOTE:
+               texture bound to global mem = less penalty for misaligned data accesses
+                 
+##############################
+##############################
+gpu computing using cuda c - advanced 2 (2010)
+##############################
+##############################
+execution configuration, instruction/warp optimization
+
+  occupancy
+    threads: sequentially-hide latency by execute other threads
+    want as many threads as possible
+    occupancy: # of warps running concurrently / max warps that could run
+      limits: registers
+              shared memory
+    rules of thumb:
+      # of blocks > # of multiprocessors
+        (all multiprocessors have at least one block to execute
+      # of blocks / # of multiprocessors > 2
+        multiple blocks can run on single multiprocessor
+        blocks not waiting at __syncthreads() keep hardware busy
+        resource availability-registers, shared memory
+      # of blocks massive
+        scale to future high-# of processors hardware
+    register dependency
+      read-after-write register dependency:
+        result can be read ~ 24 cycles after write
+      to hide: at least 192 threads per multiprocessor (6 warps)
+      * dun nd to be same threadblock
+    register pressure
+      hide latency by using more threads per multiprocessor
+      limiting factor:
+        8k/16k registers per multiprocessor
+        16KB shared mem
+      compile with -ptxas-options=-v flag
+      use -maxrregcount=N flag to NVCC
+        N = desired maximum registers/kernel
+        at some point, spilling into local memory may occur = much slower
+      cuda occupancy calculator
+  threads/block:
+    choose threads as multiple of warp size (16N)
+      avoid wasting computation on under-populated warps
+      facilitates coalescing
+    run as many warps as possible per multiprocessor
+    multiprocessor: up to 8 blocks at a time
+    heuristics:
+      min 64 threads per block (only if multiple concurrent blocks)
+      192, 256 better choice
+      depends on computation->experiment
+  occupancy != performance
+    (look at resource usage-don't spill over memory)
+
+  parameterize application: adapt to dif gpus
+    parameters: # of multiprocessors
+                memory bandwidth
+                shared memory size
+                register file size
+                max threads per block
+    self-tuning/self-discovering... determine optimal configurations
+instruction optimization
+  instruction cycles per warp = sum of:
+    operand read
+    instruction execution
+    result update
+  depends on:
+    nominal instruction throughput
+    memory latency
+    memory bandwidth
+  cycle: multiprocessor clock rate
+  maximizing throughput:
+    maximize use of high-bandwidth, low-latency memory
+      use shared memory
+      minimize global memory
+      max coalescing
+    optimize by overlapping memory w/ hardware computation
+      high arithmetic intensity programs (math >>>> memory access)
+      many threads
+      (threads don't block til load values are needed = overlap easy)
+  instruction info
+    int float->add shift min max, float mul, mad: 4 cycles per warp
+      int multiply is 32-bit
+      __mul24() / __umul24() intrinsics for 4-cycle 24-bit int multiply
+    integer divide, module:
+      compiler-convert literal power-of-2 divides to shifts
+      be explicit in cases where compiler can't tell divisor is power of 2
+      foo%n==foo&(n-1) if n is power of 2
+  runtime math library
+    __funcf(): direct mapping to hardware ISA
+      fast, low accuracy
+      __sinf(x), __expf(x), __powf(x, y)...
+    funcf(): compile to multiple instructions
+      slow, but higher accuracy
+      sinf(x), expf(x), powf(x, y)
+    -use_fast_math option forces all funcf() into __funcf()
+    NOTE:
+      GPU results != CPU results...
+      floating-point arithmetic not associative
+  control flow instructions
+    branching divergence is main concern
+    dif paths must be serialized
+    avoid divergence when branch condition is function of thread ID
+      with divergence:
+        if (threadIdx.x > 2) {}
+        branch granularity < warpsize
+      without divergence
+        if (threadIdx.x / WARP_SIZE > 2 ) {}
+        branch granularity = n*warpsize
+multigpu
+  gpus don't share global memory
+  inter-gpu communication: responsibility of app developer
+  data travels across PCIe bus
+  context must be set before calls issued to GPU
+    contexted set by first Cuda call that changes state
+      (kernel launch, cudaMalloc, cudaMemcpy, cudaFree, etc)
+    cudaThreadExit() destroys context
+    cudaSetDevice needs to be before context creation
+  1 context per thread
+  GPUs: integer IDs
+    cudaGetDeviceCount(int* num_devices)
+    cudaSetDevice(int device_id)
+    cudaGetDevice(int* current_device_id)
+    cudaThreadExit(): exit context
+    cudaGetDeviceProperties( cudaDeviceProp *properties,
+                             int device_id )
+      useful for dif gpus
+      pick particular gpu
+  ensuring a single context per GPU
+    application-control
+      host threads negotiate which GPUs to use
+    driver-control
+    exclusive mode: one context per GPU
+      (no time-slicing for dif contexts)
+      admin: SMI->exclusive mode
+      application doesn't set GPU driver sets GPU
+      implicit context creation fails if all GPUs bein used
+      ie cudaFree(null)
+  inter-gpu communication
+    GPU1->hostthread1, hostthread1->hostthread2, hostthread2->GPU2
+interoperability
+  OpenGL buffers can be mapped to Cuda address space as globalmem
+  (display directly from gpu memory) etc
+  steps:
+    cudaGLRegisterBufferObject(GLuint buffObj);
+      register buffer with cuda
+        OpenGL can only use registered buffer as source
+        unregister buffer before render
+    cudaGLMapBufferObject(void **devPtr, GLuint buffObj)
+      returns global memory address
+      (must be registered before mapping)
+    launch kernel
+    unmap buffer obj
+      cudaGLUnmapBufferObject(GLuint buffObj)
+    unregister
+      cudaGLUnregisterBufferObject(GLuint buffObj)
+      (optional, need if buffer is render target)
+    use buffer in OpenGL code
+  interop scenario: dynamic cuda-generated texture
+    unsigned char *p_d = 0;
+    cudaGLMapBufferObject((void**)&p_d, pbo);
+    prepTexture<<<height, width>>>(p_d, time);
+    cudaGLUnmapBufferObject(pbo);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, pbo);
+    glBindTexture(GL_TEXTURE_2D, textID);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 256, GL_BGRA, GL_UNSIGNED_BYTE, 0);
+  interop scenario: frame post-processing
+    unsigned char*p_d=0;
+    cudaGLRegisterBufferObject(pbo);
+    cudaGLMapBufferObject((void** &p_d, pbo);
+    postProcess<<<blocks, threads>>>(p_d);
+    cudaGLUnmapBufferObject(pbo);
+    cudaGLUnregisterBufferObject(pbo);
+  NOTE: resolution increase = more memory usage->can cause program crash= need to
+    constantly check status
+
+
+  runtime api: cuda* functions, uses <<<blocks, threads>>>
+  driver api: no extensions, lower level, functions start with cu instead of cuda
+              <<<>>>???
+##############################
+##############################
+cuda libraries
+##############################
+##############################
+cuda-accelerated libraries:
+  already:
+    parallelized
+    implemented
+    debugged
+    optimized
+
+CUFFT           FFT
+CUBLAS          dense linear algebra
+CUSPARSE        sparse linear algebra
+Libm (math.h)   standard C math lib
+CURAND          pseudo-random, quasi-random #s
+NPP             image/signal processing
+Thrust          STL-like Parallel Primitives Library
+
+open source:
+MAGMA
+CULA Tools
+CUSP
+CUDPP
+OpenVidia
+OpenCurrent
+NAG
+
+CUFFT:
+  1,2,3d
+  single and double precision
+  row-major
+  inplace, out of place transforms
+  up to 128million elements
+  batch execution
+  streamed async execution
+  non-normalized output
+  steps:
+    allocate space
+    plan: size, type
+    execute plan
+    free space
+  ex:
+    #include <stdlib.h>
+    #include <stdio.h>
+    #include "cufft.h"
+    
+    #define NX 256
+    #define NY 128
+
+    main() {
+      cufftHandle plan;
+      cufftComplex *idata, *odata;
+      int i;
+      cudaMalloc((void**) &idata, sizeof(cufftComplex)*NX*NY);
+      cudaMalloc((void**) &odata, sizeof(cufftComplex)*NX*NY);
+      for(i = 0; i < NX*NY; i ++) {
+        idata[i].x = (float)rand() / (float) RAND_MAX;
+        idata[i].y = (float)rand() / (float) RAND_MAX;
+      }
+      cufftPlan2d(&plan, NX, NY, CUFFT_C2C);//complex to complex: c2c
+      
+      cufftExecC2C(plan, idata, odata, CUFFT_FORWARD);
+
+      cufftExecC2C(plan, odata, odata, CUFFT_INVERSE);
+      
+      cufftDestroy(plan);
+      cudaFree(idata);
+      cudaFree(odata);
+      return 0;
+    }
+CUBLAS:
+  basic linear algebra subroutines/subprograms
+  lvl1(O(N)): AXPY, dot...
+  lvl2(O(N^2)): GEMV(vector * generalMatrix), TRSV(triangular solver)
+  lvl3(O(n^3)): GEMM (gen. MatMul), TRSM: triangular solver
+  CUBLAS: column major storage (BLAS convention)
+  4 types: float, double, complex, double complex
+           S      D       C        Z
+  152 routines:
+    convention: cublas+type+BLAS name
+    ex:
+      cublasSGEMM
+        cublas: cublas library
+        S: single precision float
+        GE: general
+        M: mult
+        M: matrix
+  #include "cublas.h"
+  helper functions: memory allocation, data transfer
+  code notes:
+    cublasInit()
+    cublasShutdon()
+    cublasAlloc
+    cublasSetMatrix
+    cublasGetMatrix:
+      return matrix from device to host
+    etc
+CUSPARSE
+  linear
+  useful for iterative approaches
+Libm:
+  can be called in kernel
+  c99 compatible
+  basics: +, *, /, sqrt, fma(x, y, ,z) = (x*y) + z
+  exponentials (exp, exp2, log, log2, log10...
+  trig (sin cos tan, asin acos atan2, sinh, cosh, asinh, acosh)
+  specials: lgamma, tgamma, erf, erfc
+  utility: fmod, remquo, modf, trunc, round, ceil, floor, fabs,...
+  extras: rsqrt, rcbrt, exp10, sinpi, sincos, erfinv erfcinv...
+CURAND:
+  rand num generator
+  bitshift (pseudo): XORWOW
+  quasi-random: Sobol'
+  can use in gpu, host etc
+  single, double
+  uniform, normal, lognormal
+  curandCreateGenerator()
+  curandSetPseudoRandomGeneratorSeed()
+  generate...
+  curandDestroyGenerator()
+  curand_init(seed, id, 0, state)
+NPP
+  Nvidia Performance Primitives (image/signal processing)
+  low lvl api
+  execute on gpu
+  350 image processing
+  100 signal processing
+  ex:
+    arithmetic
+    data exchange/initialization
+    color conversion
+    thresholding/comparing
+    filter
+    geometry
+    stats
+    segmentation
+thrust
+  c++ STL library
+  containers
+    manage mem on host/device
+    thrust::host_vector<T>
+    thrust::device_vector<T>
+    avoids errors
+  iterators
+    know data location
+    define ranges
+  algorithms
+    sort, reduction, scan
+    algs act on ranges, general types, operators, etc
+##############################
+##############################
+streams and concurrency
+##############################
+##############################
+concurrency:
+  multiple cuda operations:
+    cuda kernel
+    cuda memcpyasync
+    operations on cpu
+  up to 16 cuda kernels
+  2 asyncs in dif directions
+  computation on cpu
+streams
+  seq of cuda operations
+  executed serially
+  ex: tiled DGEMM
+concurrency:
+  cuda operations: non-0 different streams
+  memcpy must be from pinned memory
+    (cudaMallocHost, cudaHostAlloc)
+  sufficient resources
+    (asyncs in dif directions)
+  (device resources: smem, registers, blocks, etc)
+explicit synchronization
+  cudaDeviceSynchronize()
+    blocks host til all cuda done
+  cudaStreamSynchronize()
+    synch host w/ stream
+  events
+    cudaEventRecode(event, streamid)
+    cudaEventSynchronize(event)
+    cudaStreamWaitEvent(stream, event)
+      block stream til the event
+    cudaEventquery
+implicit sync
+  page-locked allocation
+  device memory allocation
+  non-async mem options
+  change to L1/shared memory config
+NOTE:
+  schedule breadthfirst to increase async/parallelization
+stream execution details:
+  1 execution queue
+  1 H2D queue
+  1 D2H queue
+  commands delivered in sequence
+    placed in queues
+    stream dependencies in queue lost
+    stream b/w queues maintained (using signals)
+  cuda operations:
+    all previous calls in same stream "completed"
+    all previous calls in same queue "dispatched",
+    resources available
+  kernels:
+    different streams
+    threadblocks scheduled if:
+      all threadblocks for previous kernels scheduled
+      still enough resources
+  blocked operation blocks all other operations in the queue (even other streams)
+examples:
+  blocked queue
+    stream 1: HDa1, HDb1, K1, DH1
+    stream 2: DH2
+    issue  order: HDa1, HDb1, K1, DH1, DH2
+       queues:  
+       H2D:     kernel: D2H
+       HDa1     K1      DH1
+       HDb1             DH2
+       *stream identity lost
+       stream dependence maintained
+       ie: K1 depends on HDb1
+       DH2 depends on K1
+       therefore: execution order:
+
+       stream1  HDa1    HDb1    K1      DH1
+       stream2                          DH2
+
+       queueview
+       HDa1
+       HDb1
+            K1
+                DH1
+                DH2
+
+
+     issue order: DH2, HDa1, HDb1, K1, DH1
+
+       queues:  
+       H2D:     kernel: D2H
+       HDa1     K1      DH2
+       HDb1             DH1
+
+       stream1  HDa1    HDb1    K1      DH1
+       stream2  DH2
+
+       queueview
+       HDa1       DH2
+       HDb1
+            K1
+                  DH1
+
+    Kernel example:
+       kernels: same size
+                1/2 or less of shared memory
+       stream1: Ka1, Kb1
+       stream2: Ka2, Kb2
+
+       order: Ka1, Kb1, Ka2, Kb2:
+             queue:   execution:
+             Ka1      Ka1
+             Kb1      Kb1 Ka2
+             Ka2          Kb2
+             Kb2
+
+        order: Ka1, Ka2, Kb1, Kb2:
+          queue:   execution:
+          Ka1      Ka1   Ka2
+          Ka2      Kb1   Kb2
+          Kb1
+          Kb2
+
+    kernel: execution time
+             kernel{exec time}
+    stream1: Ka1{2}, Kb1{1}
+    stream2: Kc2{1}, Kd2{2}
+
+    issue order: Ka1, Kb1, Kc2, Kd2
+    execution:
+    time going down
+      Ka1
+      Ka1
+      Kb1 Kc2
+          Kd2
+          Kd2
+    issue order: Ka1, Kc2, Kb1, Kd2
+    exeuction:
+      Ka1 Kc2
+      Ka1
+      Kb1 Kd2
+          Kd2
+
+    issue order: Ka1, Kc2, Kd2, Kb1
+    execution:
+      Ka1 Kc2
+      Ka1 Kd2
+      Kb1 Kd2
+
+signal inserted into queues after operation to launch next operation in same stream
+compute engine queue: compute kernels issued sequentially, signal is delayed
+UNTIL AFTER THE LAST SEQUENTIAL COMPUTE KERNEL
+can delay other queues that depend on compute queue
+  ex:
+    3 streams:
+    HD, K, DH
+
+    issue order: HD1, HD2, Hd3, K1, K2, K3, DH1, DH2, DH3
+    queues:
+      HD1  K1  DH1
+      HD2  K2  DH2
+      HD3  K3  DH3
+    result: finish signals in compute queue merged into 1 at the very end:
+    execution:
+      HD1
+      HD2  K1
+      HD3  K2
+           K3
+               DH
+               DH2
+               DH3
+    issue order:depth first
+    same queues
+    execution:
+      HD1
+      HD2  K1
+      HD3  K2  DH1
+           K3  DH2
+               DH3
+    NOTE: separation of kernel order issues
+          results in no signal merging
+    compute capability 1.0: cpu gpu concurrency
+    compute capability 1.1: asyncEngineCount property-how many mem queues
+    compute capability 2.0: concurrentKernels property-concurrent kernels?
+                            asyncEngineCount-how many mem queues
+other details:
+  up to 16, but DIFFICULT to get more than 4 concurrently
+  CUDA_LAUNCH_BLOCKING: disable all currency (for debugging)
+  cudaStreamQuery: separate sequential kernels to prevent delaying signals
+  kernels with > 8 textures can't be concurrent
+  switching L1/Shared configuration = break concurrency
+  to run concurrently, cudaoperations must have <=62 intervening cuda operations
+  further orders are serialized
+  cudaEvent_t: useful for timing, but if want performance: use
+    cudaEventCreateWithFlags(&event, cudaEventDisableTiming)
+guidlines:
+  code to programming model-streams
+  pay attention to issue order
+  pay attention to resources
+  use tools to visualize concurrency
+##############################
+##############################
+multi-gpu programming
+##############################
+##############################
+1:30
