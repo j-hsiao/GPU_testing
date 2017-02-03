@@ -85,9 +85,14 @@ int main(int argn, char** args){
   int KW = blurfilt.size().width;
   int KH = blurfilt.size().height;
 
+  int TOTW = 640;
+  int TOTH = 480;
+  int BLOCKW = 64;
+  int BLOCKH = 1;
+
   //640x480x3 total
-  dim3 grid(20, 15);
-  dim3 block(32, 32, 1);
+  dim3 grid(TOTW/BLOCKW, TOTH/BLOCKH);
+  dim3 block(BLOCKW, BLOCKH, 1);
   /*
   notes:
     grid:      block:     runtime:
@@ -113,6 +118,16 @@ int main(int argn, char** args){
     border_pixel:
     20  30     32 16 1    0.45-0.46: even faster!
     20  15     32 32 1    0.46: pretty much same as above
+
+    X   X      8  4  1    0.62/0.63
+    X   X      16 2  1    0.51
+    X   X      32 1  1    0.51
+
+    X   X      8  8  1    0.62/0.63
+    X   X      16 4  1    0.50
+    X   X      32 2  1    0.46
+    X   X      64 1  1    0.455
+
   */
 
 
@@ -154,6 +169,8 @@ int main(int argn, char** args){
 
 
 
+  float totalTime = 0.0f;
+  int totalFrames = 0;
 
   while(true) {
     if(cap.read(imframe)) {
@@ -181,7 +198,7 @@ int main(int argn, char** args){
 
 
       cudaMemcpy((void*) kernelInput, (void*) bordered.data, sizeof(uchar)*(bordered.size[0]*bordered.size[1]*3), cudaMemcpyHostToDevice);
-      printf("copy input: %s\n", cudaGetErrorString(cudaGetLastError()));
+      // printf("copy input: %s\n", cudaGetErrorString(cudaGetLastError()));
 
       // std::cout << "size of input: " << sizeof(uchar)*(bordered.size[0]*bordered.size[1]*3) << std::endl;
       // std::cout.flush();
@@ -196,13 +213,15 @@ int main(int argn, char** args){
       cudaEventSynchronize(stop);
       float et;
       cudaEventElapsedTime(&et, start, stop);
+      totalTime += et;
+      totalFrames++;
       cudaEventDestroy(start);
       cudaEventDestroy(stop);
 
-      printf("kernel runtime: %8.7f\n", et);
+      // printf("kernel runtime: %8.7f\n", et);
 
       cudaMemcpy((void*) myProcessed.data, (void*) kernelOutput, (sizeof(uchar) * IW * IH * 3), cudaMemcpyDeviceToHost);
-      printf("copy output: %s\n", cudaGetErrorString(cudaGetLastError()));
+      // printf("copy output: %s\n", cudaGetErrorString(cudaGetLastError()));
 
       // std::cout << "size of output: " << sizeof(uchar) * IW * IH * 3 << std::endl;
       // std::cout.flush();
@@ -219,6 +238,7 @@ int main(int argn, char** args){
       break;
     }
   }
+  printf("average kernel time: %2.7f\n", totalTime / totalFrames);
   imframe.release();
   cvProcessed.release();
   cap.release();
