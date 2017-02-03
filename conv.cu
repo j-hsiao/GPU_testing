@@ -87,14 +87,14 @@ int main(int argn, char** args){
 
   int TOTW = 640;
   int TOTH = 480;
-  int BLOCKW = 64;
+  int BLOCKW = 128;
   int BLOCKH = 1;
 
   //640x480x3 total
   dim3 grid(TOTW/BLOCKW, TOTH/BLOCKH);
   dim3 block(BLOCKW, BLOCKH, 1);
   /*
-  notes:
+  indiv conv:
     grid:      block:     runtime:
     160 120    4  4  3    1.4-1.7 msec per image
     40  480    16 1  3    1.22    msec per image
@@ -115,9 +115,9 @@ int main(int argn, char** args){
 
     20  480    32 1  3    0.98, occasional 1.3
 
-    border_pixel:
-    20  30     32 16 1    0.45-0.46: even faster!
-    20  15     32 32 1    0.46: pretty much same as above
+  pixel conv:
+    20  30     32 16 1    0.45-0.46
+    20  15     32 32 1    0.46
 
     X   X      8  4  1    0.62/0.63
     X   X      16 2  1    0.51
@@ -125,8 +125,27 @@ int main(int argn, char** args){
 
     X   X      8  8  1    0.62/0.63
     X   X      16 4  1    0.50
-    X   X      32 2  1    0.46
-    X   X      64 1  1    0.455
+    X   X      32 2  1    0.458
+    X   X      64 1  1    0.461
+    X   X      4  16 1    0.82
+    X   X      2  32 1    1.33
+    X   X      1  64 1    2.20
+
+    
+    X   X      1  1  1    10.35
+    X   X      2  1  1    5.53
+    X   X      4  1  1    2.79
+    X   X      5  1  1    2.26
+    X   X      8  1  1    1.48
+    X   X      10 1  1    1.16
+    X   X      16 1  1    0.77
+    X   X      20 1  1    0.64
+    X   X      32 1  1    0.46
+    X   X      40 1  1    0.5
+    X   X      64 1  1    0.46
+    X   X      80 1  1    0.52
+    X   X     128 1  1    0.46
+
 
   */
 
