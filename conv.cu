@@ -87,7 +87,7 @@ int main(int argn, char** args){
 
   int TOTW = 640;
   int TOTH = 480;
-  int BLOCKW = 128;
+  int BLOCKW = 320;
   int BLOCKH = 1;
 
   //640x480x3 total
@@ -133,18 +133,19 @@ int main(int argn, char** args){
 
     
     X   X      1  1  1    10.35
-    X   X      2  1  1    5.53
-    X   X      4  1  1    2.79
-    X   X      5  1  1    2.26
-    X   X      8  1  1    1.48
-    X   X      10 1  1    1.16
-    X   X      16 1  1    0.77
-    X   X      20 1  1    0.64
-    X   X      32 1  1    0.46
-    X   X      40 1  1    0.5
-    X   X      64 1  1    0.46
-    X   X      80 1  1    0.52
-    X   X     128 1  1    0.46
+    X   X      2  1  1    5.53   x1.87
+    X   X      4  1  1    2.79   x1.98
+    X   X      5  1  1    2.26   x1.23
+    X   X      8  1  1    1.48   x1.53
+    X   X      10 1  1    1.16   x1.28
+    X   X      16 1  1    0.77   x1.5
+    X   X      20 1  1    0.64   x1.2
+    X   X      32 1  1    0.46   x1.39
+    X   X      40 1  1    0.5    x0.92
+    X   X      64 1  1    0.46   x1.09
+    X   X      80 1  1    0.52   x0.88
+    X   X     128 1  1    0.46   x1.13
+    X   X     320 1  1    0.46   x1
 
 
   */
